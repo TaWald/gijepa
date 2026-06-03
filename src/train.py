@@ -72,6 +72,7 @@ def main(args, resume_preempt=False):
 
     # -- META
     use_bfloat16 = args['meta']['use_bfloat16']
+    use_compile = args['meta'].get('use_compile', True)
     model_name = args['meta']['model_name']
     load_model = args['meta']['load_checkpoint'] or resume_preempt
     r_file = args['meta']['read_checkpoint']
@@ -218,6 +219,11 @@ def main(args, resume_preempt=False):
         num_epochs=num_epochs,
         ipe_scale=ipe_scale,
         use_bfloat16=use_bfloat16)
+    if use_compile:
+        logger.info('Compiling encoder/predictor/target_encoder with torch.compile(dynamic=True)')
+        encoder = torch.compile(encoder, dynamic=True)
+        predictor = torch.compile(predictor, dynamic=True)
+        target_encoder = torch.compile(target_encoder, dynamic=True)
     encoder = DistributedDataParallel(encoder, static_graph=True)
     predictor = DistributedDataParallel(predictor, static_graph=True)
     target_encoder = DistributedDataParallel(target_encoder)
@@ -313,19 +319,14 @@ def main(args, resume_preempt=False):
                     return loss
 
                 # Step 1. Forward
-                with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=use_bfloat16):
+                with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_bfloat16):
                     h = forward_target()
                     z = forward_context()
                     loss = loss_fn(z, h)
 
                 #  Step 2. Backward & step
-                if use_bfloat16:
-                    scaler.scale(loss).backward()
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    loss.backward()
-                    optimizer.step()
+                loss.backward()
+                optimizer.step()
                 grad_stats = grad_logger(encoder.named_parameters())
                 optimizer.zero_grad()
 
