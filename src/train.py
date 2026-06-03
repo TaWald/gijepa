@@ -219,16 +219,15 @@ def main(args, resume_preempt=False):
         num_epochs=num_epochs,
         ipe_scale=ipe_scale,
         use_bfloat16=use_bfloat16)
-    if use_compile:
-        logger.info('Compiling encoder/predictor/target_encoder with torch.compile(dynamic=True)')
-        encoder = torch.compile(encoder, dynamic=True)
-        predictor = torch.compile(predictor, dynamic=True)
-        target_encoder = torch.compile(target_encoder, dynamic=True)
     encoder = DistributedDataParallel(encoder, static_graph=True)
     predictor = DistributedDataParallel(predictor, static_graph=True)
     target_encoder = DistributedDataParallel(target_encoder)
     for p in target_encoder.parameters():
         p.requires_grad = False
+
+    if use_compile:
+        logger.info('Compiling target_encoder with torch.compile (static shapes)')
+        target_encoder = torch.compile(target_encoder)
 
     # -- momentum schedule
     momentum_scheduler = (ema[0] + i*(ema[1]-ema[0])/(ipe*num_epochs*ipe_scale)
