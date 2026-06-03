@@ -332,8 +332,10 @@ def main(args, resume_preempt=False):
                 # Step 3. momentum update of target encoder
                 with torch.no_grad():
                     m = next(momentum_scheduler)
-                    for param_q, param_k in zip(encoder.parameters(), target_encoder.parameters()):
-                        param_k.data.mul_(m).add_((1.-m) * param_q.detach().data)
+                    src_params = [p.data for p in encoder.parameters()]
+                    tgt_params = [p.data for p in target_encoder.parameters()]
+                    torch._foreach_mul_(tgt_params, m)
+                    torch._foreach_add_(tgt_params, src_params, alpha=1. - m)
 
                 return (float(loss), _new_lr, _new_wd, grad_stats)
             (loss, _new_lr, _new_wd, grad_stats), etime = gpu_timer(train_step)
