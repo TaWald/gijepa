@@ -136,13 +136,14 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x):
+    def forward(self, x, attn_mask=None):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
         x = F.scaled_dot_product_attention(
             q, k, v,
+            attn_mask=attn_mask,
             dropout_p=self.attn_drop_p if self.training else 0.0,
             scale=self.scale,
         )
@@ -164,8 +165,8 @@ class Block(nn.Module):
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = MLP(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
-    def forward(self, x):
-        x = x + self.drop_path(self.attn(self.norm1(x)))
+    def forward(self, x, attn_mask=None):
+        x = x + self.drop_path(self.attn(self.norm1(x), attn_mask=attn_mask))
         x = x + self.drop_path(self.mlp(self.norm2(x)))
         return x
 
@@ -397,6 +398,8 @@ class VisionTransformer(nn.Module):
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
+    TOKEN_ALIGN = 16
+
     def forward(self, x, masks=None):
         if masks is not None:
             if not isinstance(masks, list):
@@ -410,16 +413,38 @@ class VisionTransformer(nn.Module):
         pos_embed = self.interpolate_pos_encoding(x, self.pos_embed)
         x = x + pos_embed
 
-        # -- mask x
+        # -- mask x; pad token count to TOKEN_ALIGN for tensor-core / compile-cache friendliness
+        attn_mask = None
+        K_real = None
         if masks is not None:
+            K_real = masks[0].size(1)
+            align = self.TOKEN_ALIGN
+            K_pad = ((K_real + align - 1) // align) * align
+            if K_pad != K_real:
+                pad_size = K_pad - K_real
+                padded = []
+                for m in masks:
+                    # Pad with index 0 (a duplicate of the first patch). The padded
+                    # positions will be ignored in attention via attn_mask, and we
+                    # slice them off before returning.
+                    pad = torch.zeros(m.size(0), pad_size, dtype=m.dtype, device=m.device)
+                    padded.append(torch.cat([m, pad], dim=1))
+                masks = padded
+                # Additive mask broadcast over [B, heads, queries]: -inf on padded keys
+                attn_mask = torch.zeros(1, 1, 1, K_pad, dtype=x.dtype, device=x.device)
+                attn_mask[..., K_real:] = float('-inf')
             x = apply_masks(x, masks)
 
         # -- fwd prop
-        for i, blk in enumerate(self.blocks):
-            x = blk(x)
+        for blk in self.blocks:
+            x = blk(x, attn_mask=attn_mask)
 
         if self.norm is not None:
             x = self.norm(x)
+
+        # -- slice off padding so downstream (predictor, loss) sees the real shape
+        if K_real is not None and x.size(1) != K_real:
+            x = x[:, :K_real, :]
 
         return x
 

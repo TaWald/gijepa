@@ -59,6 +59,8 @@ _GLOBAL_SEED = 0
 np.random.seed(_GLOBAL_SEED)
 torch.manual_seed(_GLOBAL_SEED)
 torch.backends.cudnn.benchmark = True
+torch.set_float32_matmul_precision("high")
+torch._dynamo.config.cache_size_limit = 32
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger()
@@ -167,6 +169,8 @@ def main(args, resume_preempt=False):
         pred_depth=pred_depth,
         pred_emb_dim=pred_emb_dim,
         model_name=model_name)
+    # Route the (only) conv through cuDNN's NHWC tensor-core kernels
+    encoder.patch_embed.proj = encoder.patch_embed.proj.to(memory_format=torch.channels_last)
     target_encoder = copy.deepcopy(encoder)
 
     # -- make data transforms
@@ -226,8 +230,12 @@ def main(args, resume_preempt=False):
         p.requires_grad = False
 
     if use_compile:
-        logger.info('Compiling target_encoder with torch.compile (static shapes)')
-        target_encoder = torch.compile(target_encoder)
+        logger.info('Compiling target_encoder (max-autotune, static shapes)')
+        target_encoder = torch.compile(target_encoder, mode="max-autotune")
+        logger.info('Compiling encoder with torch.compile(dynamic=True)')
+        encoder = torch.compile(encoder, dynamic=True)
+        logger.info('Compiling predictor with torch.compile(dynamic=True)')
+        predictor = torch.compile(predictor, dynamic=True)
 
     # -- momentum schedule
     momentum_scheduler = (ema[0] + i*(ema[1]-ema[0])/(ipe*num_epochs*ipe_scale)
@@ -284,7 +292,7 @@ def main(args, resume_preempt=False):
 
             def load_imgs():
                 # -- unsupervised imgs
-                imgs = udata[0].to(device, non_blocking=True)
+                imgs = udata[0].to(device, non_blocking=True).to(memory_format=torch.channels_last)
                 masks_1 = [u.to(device, non_blocking=True) for u in masks_enc]
                 masks_2 = [u.to(device, non_blocking=True) for u in masks_pred]
                 return (imgs, masks_1, masks_2)
