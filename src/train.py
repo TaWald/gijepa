@@ -46,7 +46,8 @@ from src.datasets.imagenet1k import make_imagenet1k
 from src.helper import (
     load_checkpoint,
     init_model,
-    init_opt)
+    init_opt,
+    uncompiled)
 from src.transforms import make_transforms
 
 # --
@@ -252,9 +253,9 @@ def main(args, resume_preempt=False):
 
     def save_checkpoint(epoch):
         save_dict = {
-            'encoder': encoder.state_dict(),
-            'predictor': predictor.state_dict(),
-            'target_encoder': target_encoder.state_dict(),
+            'encoder': uncompiled(encoder).state_dict(),
+            'predictor': uncompiled(predictor).state_dict(),
+            'target_encoder': uncompiled(target_encoder).state_dict(),
             'opt': optimizer.state_dict(),
             'scaler': None if scaler is None else scaler.state_dict(),
             'epoch': epoch,

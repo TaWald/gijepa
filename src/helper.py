@@ -20,6 +20,15 @@ logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger()
 
 
+def uncompiled(module):
+    """Return the underlying module if `module` is a torch.compile OptimizedModule.
+
+    Checkpoints saved/loaded via this helper are compile-agnostic: the on-disk
+    keys carry no `_orig_mod.` prefix regardless of whether compile is on.
+    """
+    return module._orig_mod if hasattr(module, '_orig_mod') else module
+
+
 def load_checkpoint(
     device,
     r_path,
@@ -35,19 +44,19 @@ def load_checkpoint(
 
         # -- loading encoder
         pretrained_dict = checkpoint['encoder']
-        msg = encoder.load_state_dict(pretrained_dict)
+        msg = uncompiled(encoder).load_state_dict(pretrained_dict)
         logger.info(f'loaded pretrained encoder from epoch {epoch} with msg: {msg}')
 
         # -- loading predictor
         pretrained_dict = checkpoint['predictor']
-        msg = predictor.load_state_dict(pretrained_dict)
+        msg = uncompiled(predictor).load_state_dict(pretrained_dict)
         logger.info(f'loaded pretrained encoder from epoch {epoch} with msg: {msg}')
 
         # -- loading target_encoder
         if target_encoder is not None:
             print(list(checkpoint.keys()))
             pretrained_dict = checkpoint['target_encoder']
-            msg = target_encoder.load_state_dict(pretrained_dict)
+            msg = uncompiled(target_encoder).load_state_dict(pretrained_dict)
             logger.info(f'loaded pretrained encoder from epoch {epoch} with msg: {msg}')
 
         # -- loading optimizer
